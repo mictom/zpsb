@@ -1,6 +1,5 @@
 import ijson
 import hashlib
-import passlib.hash
 
 test_nip = "8393201359"
 test_nrb = "84114011530000218221001001"

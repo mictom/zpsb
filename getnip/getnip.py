@@ -10,7 +10,6 @@ import m
 from datetime import date
 from colorama import init, Back, Fore
 
-
 #service SprawdzNIPNADzien is not active
 #bank acc is not an input to the service
 #local db
@@ -24,13 +23,38 @@ cursor = db.cursor(buffered=True)
 
 init() #colorama initation
 client = zp.Client(wsdl="https://sprawdz-status-vat.mf.gov.pl/?wsdl") #soap connection
-session_data = pd.DataFrame(columns=["NIP", "Status"])
 
 today = date.today().strftime("%Y-%m-%d")
 
 code_mapping = {"N":"Podmiot o podanym identyfikatorze podatkowym NIP nie jest zarejestrowany jako podatnik VAT", 
                 "C":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT czynny",
                 "Z":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT zwolniony"}
+
+class Session:
+    def __init__(self):
+        self.id = id
+        self.session_data = pd.DataFrame(columns=["NIP", "Status"])
+
+    def generate_report(self):
+        writer = pd.ExcelWriter("session_report.xlsx", engine="xlsxwriter") # pylint: disable=abstract-class-instantiated
+        session_data.to_excel(writer, "session_report")
+
+        writer.save()
+        print(Back.LIGHTWHITE_EX + Fore.GREEN + "\nSession report has been created successfully.\n")
+    
+    def print_session(self):
+        print("\n" + session_data.to_markdown() + "\n")
+
+class NIP:
+    def __init__(self, num):
+        self.num = num
+    
+    def save(self):
+        print()
+
+class Menu:
+    def __init__(self):
+
 
 #check if record is in db and return status
 def db_retrieve_nip(nip, day, bank_acc=None):
@@ -131,16 +155,6 @@ def load_data_from_file(path):
         except ValueError:
             print(Back.RED + "Nie ma takiego pliku.")
             quit()
-
-def generate_report(session):
-    writer = pd.ExcelWriter("session_report.xlsx", engine="xlsxwriter") # pylint: disable=abstract-class-instantiated
-    session.to_excel(writer, "session_report")
-
-    writer.save()
-    print(Back.LIGHTWHITE_EX + Fore.GREEN + "\nSession report has been created successfully.\n")
-
-def print_session(session):
-    print("\n" + session.to_markdown() + "\n")
 
 def print_menu():
     while True:

@@ -1,5 +1,4 @@
 import zeep as zp
-from colorama import init, Back, Fore
 import re
 import os
 import datetime
@@ -7,7 +6,10 @@ import pandas as pd
 import xlrd
 import xlsxwriter
 import mysql.connector
+import m
 from datetime import date
+from colorama import init, Back, Fore
+
 
 #service SprawdzNIPNADzien is not active
 #bank acc is not an input to the service
@@ -16,7 +18,7 @@ from datetime import date
 db = mysql.connector.connect(
     host="localhost",
     user="root",
-    password="1"
+    password=m.p
 )
 cursor = db.cursor(buffered=True)
 
@@ -24,19 +26,25 @@ init() #colorama initation
 client = zp.Client(wsdl="https://sprawdz-status-vat.mf.gov.pl/?wsdl") #soap connection
 session_data = pd.DataFrame(columns=["NIP", "Status"])
 
-today = date.today().strftime("%Y/%m/%d")
+today = date.today().strftime("%Y-%m-%d")
+
+code_mapping = {"N":"Podmiot o podanym identyfikatorze podatkowym NIP nie jest zarejestrowany jako podatnik VAT", 
+                "C":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT czynny",
+                "Z":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT zwolniony"}
 
 #check if record is in db and return status
 def db_retrieve_nip(nip, day, bank_acc=None):
     if bank_acc == None:
-        sql = "SELECT status FROM systemy_zintegrowane.status_nip WHERE nip = %s AND data = %s" % (nip, day)
+        sql = "SELECT status FROM systemy_zintegrowane.status_nip WHERE nip = '%s' AND data = '%s'" % (nip, day)
     else:
-        sql = "SELECT status FROM systemy_zintegrowane.status_rachunek_bankowy WHERE nip = %s AND data = %s AND rachunek_bankowy = %s" % (nip, day, bank_acc)
+        sql = "SELECT status FROM systemy_zintegrowane.status_rachunek_bankowy WHERE nip = '%s' AND data = '%s' AND rachunek_bankowy = '%s'" % (nip, day, bank_acc)
     cursor.execute(sql)
-    if cursor.rowcount == 0:
+    records = len(cursor.fetchall())
+    if records == 0:
         return 0
     else:
-        return cursor.fetchone()
+        print(data[0][0])
+        return records[0][0]
 
 #add a record to db
 def db_log_request(nip, day, status, bank_acc=None):
@@ -54,9 +62,10 @@ def handle_single_request(nip, bank_acc=None):
     if db_msg == 0:
         req = client.service.SprawdzNIP(nip)
         status = req['Komunikat']
-        db_log_request(nip, today, status)
+        db_log_request(nip, today, req['Kod'])
     else:
-        print("JUZ Byl w DB")
+        status = "juz byl w db"
+        print("JUZ Byl w DB") #tutaj odmapowanie
         print(db_msg)
 
     #add line to session

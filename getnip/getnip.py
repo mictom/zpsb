@@ -14,26 +14,14 @@ from colorama import init, Back, Fore
 #bank acc is not an input to the service
 #local db
 
-db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password=m.p
-)
-cursor = db.cursor(buffered=True)
-
-init() #colorama initation
-client = zp.Client(wsdl="https://sprawdz-status-vat.mf.gov.pl/?wsdl") #soap connection
-
-today = date.today().strftime("%Y-%m-%d")
-
-code_mapping = {"N":"Podmiot o podanym identyfikatorze podatkowym NIP nie jest zarejestrowany jako podatnik VAT", 
-                "C":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT czynny",
-                "Z":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT zwolniony"}
-
 class Session:
     def __init__(self):
         self.id = id
         self.session_data = pd.DataFrame(columns=["NIP", "Status"])
+
+    def add_to_session(self, NIP):
+        if self.session_data["NIP"].any() != NIP.num:
+            session_data = session_data.append(pd.DataFrame({"NIP": [NIP.num], "Status":[NIP.status]}), ignore_index=True)
 
     def generate_report(self):
         writer = pd.ExcelWriter("session_report.xlsx", engine="xlsxwriter") # pylint: disable=abstract-class-instantiated
@@ -46,14 +34,87 @@ class Session:
         print("\n" + session_data.to_markdown() + "\n")
 
 class NIP:
-    def __init__(self, num):
+    def __init__(self, num, bank_acc=None):
         self.num = num
-    
+        self.bank_acc = bank_acc
+        self.status = ""
+        self.status_code = ""
+
     def save(self):
         print()
 
+    #verify NIP format
+    def __validate_nip(self, nip):
+        if len(nip) != 10:
+            return (Back.RED + "Numer NIP powinien zawierać 10 cyfr!")
+        elif re.match(r'^\d{10}$', nip) == None:
+            return (Back.RED + "Podany numer nie powinien zawierać żadnych liter ani znaków specjalnych!")
+        else:
+            return ""
+
+    def get_from_user(self, n_try):
+        for i in range(n_try): 
+            print(Fore.RESET + Back.RESET + "Podaj numer NIP: ", end="")
+            nip = input()
+            if __validate_nip(nip) == "":
+                print()
+                self.num = nip
+                break
+            else:
+                print(__validate_nip(nip))
+            if i == 4: 
+                #quit the program when too many tries
+                print("Osiągnieto limit prób. Program się wyłącza.")
+                quit()
+
+
+    def send_request(self):
+        db_msg = db_retrieve_nip(nip, today)
+        if db_msg == 0:
+            req = client.service.SprawdzNIP(nip)
+            status = req['Komunikat']
+            db_log_request(nip, today, req['Kod'])
+        else:
+            status = "juz byl w db"
+            print("JUZ Byl w DB") #tutaj odmapowanie
+            print(db_msg)
+
+        print(Back.CYAN + nip + ": " + status + "\n")
+
 class Menu:
     def __init__(self):
+
+    def print_main(self):
+        while True:
+            print(Fore.RESET + Back.RESET + "Wybierz akcję:\n \
+            1: Sprawdź status dla pojedynczego numeru NIP\n \
+            2: Sprawdź status dla wielu numerów NIP\n \
+            3: Pokaż dane z obecnej sesji\n \
+            4: Wygeneruj raport\n \
+            5: Wyjdź z programu")
+            print("Wybór: ", end="")
+
+            choice = input()
+
+            if choice not in ("1", "2", "3", "4", "5"):
+                print(Back.RED + "Nieprawidłowy wybór. Wybierz akcję poprzez wpisanie cyfry od 1 do 3.")
+            else:
+                break
+        
+        return choice
+    
+    def print_multicheck_menu():
+        print(Back.RESET + "\nWybierz akcję:\n \
+        1: Wypisz numery NIP oddzielając je przecinkami\n \
+        2: Wczytaj plik CSV lub XLSX")
+        print("Wybór: ", end="")
+        choice = input()
+
+        if choice not in ("1", "2"):
+            print(Back.RED + "Nieprawidłowy wybór.")
+            quit()
+
+        return choice
 
 
 #check if record is in db and return status
@@ -79,25 +140,6 @@ def db_log_request(nip, day, status, bank_acc=None):
     cursor.execute(sql)
     db.commit()
 
-def handle_single_request(nip, bank_acc=None):
-    global session_data
-    # check db cache | bank_acc unhandled
-    db_msg = db_retrieve_nip(nip, today)
-    if db_msg == 0:
-        req = client.service.SprawdzNIP(nip)
-        status = req['Komunikat']
-        db_log_request(nip, today, req['Kod'])
-    else:
-        status = "juz byl w db"
-        print("JUZ Byl w DB") #tutaj odmapowanie
-        print(db_msg)
-
-    #add line to session
-    if session_data["NIP"].any() != nip:
-        session_data = session_data.append(pd.DataFrame({"NIP": [nip], "Status":[status]}), ignore_index=True)
-
-    print(Back.CYAN + nip + ": " + status + "\n")
-
 def handle_multiple_request(dataframe): #dodac ograniczenie 10 zapytan na sekunde
     data = dataframe[dataframe.columns[0]].values.tolist()
     print()
@@ -106,33 +148,6 @@ def handle_multiple_request(dataframe): #dodac ograniczenie 10 zapytan na sekund
             print(Back.RED + str(data[i]) + ": Niepoprawny format numeru NIP - linia została pominięta.\n")
             continue
         handle_single_request(str(data[i]))
-
-#verify nip format
-def validate_nip(nip):
-    if len(nip) != 10:
-        return (Back.RED + "Numer NIP powinien zawierać 10 cyfr!")
-    elif re.match(r'^\d{10}$', nip) == None:
-        return (Back.RED + "Podany numer nie powinien zawierać żadnych liter ani znaków specjalnych!")
-    else:
-        return ""
-
-#try to get nip from user n times
-def usr_get_nip(n_tries):
-    for i in range(n_tries): 
-        print(Fore.RESET + Back.RESET + "Podaj numer NIP: ", end="")
-
-        nip = input()
-
-        if validate_nip(nip) == "":
-            print()
-            break
-        else:
-            print(validate_nip(nip))
-        if i == 4:
-            print("Osiągnieto limit prób. Program się wyłącza.")
-            quit()
-
-    return nip
 
 def load_data_from_file(path):
     _, file_ext = os.path.splitext(path)
@@ -156,45 +171,31 @@ def load_data_from_file(path):
             print(Back.RED + "Nie ma takiego pliku.")
             quit()
 
-def print_menu():
-    while True:
-        print(Fore.RESET + Back.RESET + "Wybierz akcję:\n \
-        1: Sprawdź status dla pojedynczego numeru NIP\n \
-        2: Sprawdź status dla wielu numerów NIP\n \
-        3: Pokaż dane z obecnej sesji\n \
-        4: Wygeneruj raport\n \
-        5: Wyjdź z programu")
-        print("Wybór: ", end="")
-
-        choice = input()
-
-        if choice not in ("1", "2", "3", "4", "5"):
-            print(Back.RED + "Nieprawidłowy wybór. Wybierz akcję poprzez wpisanie cyfry od 1 do 3.")
-        else:
-            break
-    
-    return choice
-
-def print_multicheck_menu():
-    print(Back.RESET + "\nWybierz akcję:\n \
-    1: Wypisz numery NIP oddzielając je przecinkami\n \
-    2: Wczytaj plik CSV lub XLSX")
-    print("Wybór: ", end="")
-    choice = input()
-
-    if choice not in ("1", "2"):
-        print(Back.RED + "Nieprawidłowy wybór.")
-        quit()
-
-    return choice
-
 def main():
+
+    session = Session()
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password=m.p
+    )
+    cursor = db.cursor(buffered=True)
+
+    init() #colorama initation
+    client = zp.Client(wsdl="https://sprawdz-status-vat.mf.gov.pl/?wsdl") #soap connection
+
+    today = date.today().strftime("%Y-%m-%d")
+
+    code_mapping = {"N":"Podmiot o podanym identyfikatorze podatkowym NIP nie jest zarejestrowany jako podatnik VAT", 
+                    "C":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT czynny",
+                    "Z":"Podmiot o podanym identyfikatorze podatkowym NIP jest zarejestrowany jako podatnik VAT zwolniony"}
+
     while True:
         choice = print_menu()
 
         if choice == "1":
             print(Fore.RED + Back.WHITE + "\nPamiętaj, że długość numeru NIP powinna wynosić 10 cyfr i nie powinien zawierać żadnych liter ani znaków specjalnych.")
-            nip = usr_get_nip(5) 
+            nip = NIP.get_from_user(5)
             handle_single_request(nip)
             
         elif choice == "2":
@@ -212,10 +213,10 @@ def main():
                 load_data_from_file(path)
 
         elif choice == "3":
-            print_session(session_data)
+            session.print_session()
 
         elif choice == "4":
-            generate_report(session_data)
+            session.generate_report()
 
         elif choice == "5":
             quit()

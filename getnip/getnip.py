@@ -6,25 +6,21 @@ import pandas as pd
 import xlrd
 import xlsxwriter
 import mysql.connector
-import m
+import string
 from datetime import date
 from colorama import init, Back, Fore
 
 #service SprawdzNIPNADzien is not active
 #bank acc is not an input to the service
-#local db
-
-#single check seems to work fine
-#TO DO: check all the rest
 
 class Session:
     def __init__(self):
         self.id = id
-        self.session_data = pd.DataFrame(columns=["NIP", "Status"])
+        self.session_data = pd.DataFrame(columns=["NIP", "Status", "Konto bankowe"])
 
     def add_to_session(self, NIP):
         if self.session_data["NIP"].any() != NIP.num:
-            self.session_data = self.session_data.append(pd.DataFrame({"NIP": [NIP.num], "Status":[NIP.status]}), ignore_index=True)
+            self.session_data = self.session_data.append(pd.DataFrame({"NIP": [NIP.num], "Status":[NIP.status], "Konto bankowe":[NIP.bank_acc]}), ignore_index=True)
 
     def generate_report(self):
         writer = pd.ExcelWriter("session_report.xlsx", engine="xlsxwriter") # pylint: disable=abstract-class-instantiated
@@ -37,14 +33,29 @@ class Session:
         print("\n" + self.session_data.to_markdown() + "\n")
 
 class NIP:
-    def __init__(self, num=None, bank_acc=None):
+    def __init__(self, num=None):
         self.num = num
-        self.bank_acc = bank_acc
+        self.bank_acc = None
         self.status = ""
         self.status_code = ""
 
     def to_text(self):
-        print(Back.CYAN + self.num + ": " + self.status + "\n")
+        if self.bank_acc != None:
+            print(Back.CYAN + self.num + " (bank account: " + self.bank_acc + "): " + self.status + "\n")
+        else:
+            print(Back.CYAN + self.num + ": " + self.status + "\n")
+
+    def validate_iban(self, iban):
+        if len(iban) != 26 or iban.isalpha():
+            return False
+        else:
+            return True
+
+    def set_bank_acc(self, new_bank_acc):
+        if self.validate_iban(new_bank_acc):
+            self.bank_acc = new_bank_acc
+        else:
+            print(Back.RED + "Podany numer konta bankowego ma zły format!")
 
     def set_status_code(self, status_code):
         code_mapping = {"N":"Podmiot o podanym identyfikatorze podatkowym NIP nie jest zarejestrowany jako podatnik VAT", 
@@ -79,19 +90,19 @@ class NIP:
                 print("Osiągnieto limit prób. Program się wyłącza.")
                 quit()
 
-
     def send_request(self, connection):
         req = connection.service.SprawdzNIP(self.num)
         self.status = req['Komunikat']
         self.status_code = req['Kod']
 
 class App:
-    def __init__(self, db, api_connection):
+    def __init__(self, db, api_connection, session):
         self.db = db
         self.choice = ""
         self.imported_file_path = ""
         self.cursor = db.cursor(buffered=True)
         self.client = api_connection
+        self.session = session
 
     def save_to_db(self, NIP):
         if NIP.bank_acc == None:
@@ -103,6 +114,9 @@ class App:
 
         self.cursor.execute(sql, values)
         self.db.commit()
+
+    def set_choice(self, c):
+        self.choice = c
 
     def print_main_menu(self):
         while True:
@@ -119,9 +133,8 @@ class App:
             if choice not in ("1", "2", "3", "4", "5"):
                 print(Back.RED + "Nieprawidłowy wybór. Wybierz akcję poprzez wpisanie cyfry od 1 do 3.")
             else:
-                break
-        
-        self.choice = choice
+                self.set_choice(choice)
+                return
     
     def print_multicheck_menu(self):
         print(Back.RESET + "\nWybierz akcję:\n \
@@ -133,33 +146,46 @@ class App:
         if choice not in ("1", "2"):
             print(Back.RED + "Nieprawidłowy wybór.")
             quit()
-
-        return choice
+        else:
+            self.set_choice(choice)
+            return
 
     def nip_instr(self):
         print(Fore.RED + Back.WHITE + "\nPamiętaj, że długość numeru NIP powinna wynosić 10 cyfr i nie powinien zawierać żadnych liter ani znaków specjalnych.")
+        print(Fore.RESET + Back.RESET + "\nCzy chcesz sprawdzić NIP wraz z kontem bankowym? \n \
+            1: Tak\n \
+            2: Nie")
+        print("Wybór: ", end="")
+        choice = input()
+
+        if choice not in ("1", "2"):
+            print(Back.RED + "Nieprawidłowy wybór.")
+            quit()
+        else:
+            self.set_choice(choice)
+            return
 
     def path_instr(self):
         print(Back.RESET +"\nNumery NIP powinny znajdować się w pierwszej kolumnie. Podaj ścieżkę pliku: ", end="")
         self.imported_file_path = input()
 
-    def load_data_from_file(self, path):
-        _, file_ext = os.path.splitext(path)
+    def load_data_from_file(self):
+        _, file_ext = os.path.splitext(self.imported_file_path)
 
-        if os.path.isfile(path) == False:
+        if os.path.isfile(self.imported_file_path) == False:
             print(Back.RED + "Należy wskazać plik!")
         elif file_ext not in ([".csv", ".xlsx"]):
             print(Back.RED + "Niepoprawny typ pliku!")
         elif file_ext == ".csv":
             try:
-                data = pd.read_csv(path)
+                data = pd.read_csv(self.imported_file_path)
                 self.handle_multiple_request(data)
             except ValueError:
                 print(Back.RED + "Nie ma takiego pliku.")
                 quit()
         elif file_ext == ".xlsx":
             try:
-                data = pd.read_excel(path)
+                data = pd.read_excel(self.imported_file_path)
                 self.handle_multiple_request(data)
             except ValueError:
                 print(Back.RED + "Nie ma takiego pliku.")
@@ -170,6 +196,7 @@ class App:
         items = input().split(",")
         items_cln = [x.strip() for x in items]
         data = pd.DataFrame(items_cln)
+        self.handle_multiple_request(data)
 
     def db_retrieve_nip(self, nip, day, bank_acc=None):
         if bank_acc == None:
@@ -186,14 +213,38 @@ class App:
             return records[0][0]
 
     def handle_multiple_request(self, dataframe): #dodac ograniczenie 10 zapytan na sekunde
+        
+        print("Czy sprawdzić również konta bankowe? Y/N")
+        kb = input()
+
         data = dataframe[dataframe.columns[0]].values.tolist()
+        bank_data = dataframe[dataframe.columns[1]].values.tolist()
         print()
+
         for i in range(len(data)):
             nip = NIP(num=str(data[i]))
+    
             if nip.validate_nip() != "":
                 print(Back.RED + nip.num + ": Niepoprawny format numeru NIP - linia została pominięta.\n")
                 continue
+            
+            if str(bank_data[i]) != "nan":
+                print(bank_data[i])
+                nip.set_bank_acc(str(bank_data[i]))
+                qry_result = self.db_retrieve_nip(nip, date.today().strftime("%Y-%m-%d"), nip.bank_acc)
+            else:
+                qry_result = self.db_retrieve_nip(nip, date.today().strftime("%Y-%m-%d"))
+
+            if qry_result != 0:
+                nip.set_status_code(qry_result)
+                nip.to_text()
+                self.session.add_to_session(nip)
+                continue
+
             nip.send_request(self.client)
+            self.session.add_to_session(nip)
+            self.save_to_db(nip)
+            
             nip.to_text()
 
 def main():
@@ -203,12 +254,13 @@ def main():
     db = mysql.connector.connect(
         host="localhost",
         user="root",
-        password=m.p
+        password= "eloelo123",
+        auth_plugin='mysql_native_password'
     )
 
     client = zp.Client(wsdl="https://sprawdz-status-vat.mf.gov.pl/?wsdl") #soap connection
 
-    app = App(db, client)
+    app = App(db, client, session)
 
     init() #colorama initation
 
@@ -216,23 +268,29 @@ def main():
         app.print_main_menu()
 
         if app.choice == "1":
+
             app.nip_instr()
-
-            nip = NIP()
-            nip.get_from_user(n_try=5)
-            
-            qry_result = app.db_retrieve_nip(nip, date.today().strftime("%Y-%m-%d"))
-
+            if app.choice == "1":
+                nip = NIP()
+                print("Podaj konto bankowe: ", end="")
+                bank_acc = input()
+                if nip.set_bank_acc(bank_acc) == False:
+                    continue
+                nip.get_from_user(n_try=5)
+                qry_result = app.db_retrieve_nip(nip, date.today().strftime("%Y-%m-%d"), bank_acc)
+            elif app.choice == "2":
+                nip = NIP()
+                nip.get_from_user(n_try=5)
+                qry_result = app.db_retrieve_nip(nip, date.today().strftime("%Y-%m-%d"))
+                
             if qry_result == 0:
                 nip.send_request(client)
                 app.save_to_db(nip)
                 nip.to_text()
+                session.add_to_session(nip)
             else:
                 nip.set_status_code(qry_result)
                 nip.to_text()
-
-
-            session.add_to_session(nip)
             
         elif app.choice == "2":
             app.print_multicheck_menu()
@@ -242,8 +300,7 @@ def main():
 
             elif app.choice == "2":
                 app.path_instr()
-                f = input()
-                app.load_data_from_file(f)
+                app.load_data_from_file()
 
         elif app.choice == "3":
             session.print_session()
